@@ -11,7 +11,7 @@ import sys
 import pandas as pd
 
 from src.data_clean import clean_pipeline
-from src.scoring.f01_f03 import compute_f03, compute_f01, aggregate_losses
+from src.scoring.f01_f03 import compute_f03, aggregate_f03, compute_f01, aggregate_f01
 from src.scoring.f05 import compute_f05, aggregate_f05
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -44,31 +44,32 @@ logger.info("Excluded %s refunded orders (%.1f%%)",
 # ---------------------------------------------------------------------------
 
 scored = compute_f03(active)
-f03_result = aggregate_losses(scored, loss_col="f03_loss", flag_col="f03_breach")
+f03_result = aggregate_f03(scored)
 
 print("\n" + "=" * 60)
 print("F03 — Margin Floor Breach")
 print("=" * 60)
 print(f"  Orders evaluated:  {f03_result['orders_evaluated']:,}")
 print(f"  Orders flagged:    {f03_result['orders_flagged']:,} "
-      f"({f03_result['orders_flagged']/f03_result['orders_evaluated']*100:.2f}%)")
+      f"({f03_result['breach_rate_pct']:.2f}%)")
 print(f"  Total loss:        ${f03_result['total_loss']:,.2f}")
 
 # ---------------------------------------------------------------------------
-# F01 — Promotion Margin Leakage (discounted orders only)
+# F01 — Promotion Margin Leakage
 # ---------------------------------------------------------------------------
 
-disc = scored[scored["is_discounted"]].copy()
-disc = compute_f01(disc)
-f01_result = aggregate_losses(disc, loss_col="f01_loss", flag_col="f01_flagged")
+scored_f01 = compute_f01(scored)
+f01_result = aggregate_f01(scored_f01)
 
 print("\n" + "=" * 60)
 print("F01 — Promotion Margin Leakage")
 print("=" * 60)
-print(f"  Discounted orders: {f01_result['orders_evaluated']:,}")
+print(f"  Orders evaluated:  {f01_result['orders_evaluated']:,}")
+print(f"  Discounted orders: {f01_result['discounted_orders']:,}")
 print(f"  Orders flagged:    {f01_result['orders_flagged']:,} "
-      f"({f01_result['orders_flagged']/f01_result['orders_evaluated']*100:.2f}%)")
-print(f"  Total loss:        ${f01_result['total_loss']:,.2f}")
+      f"(F01 Score: {f01_result['f01_score_pct']:.2f}% of total orders, "
+      f"{f01_result['discounted_breach_rate_pct']:.2f}% of promo orders)")
+print(f"  Total promo loss:  ${f01_result['total_loss']:,.2f}")
 
 # ---------------------------------------------------------------------------
 # F05 — Shipping Cost Recovery (all orders, net aggregation)

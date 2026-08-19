@@ -7,9 +7,9 @@ Runs all scoring models against the multi-table synthetic dataset:
     - F04: Free-Shipping Leakage (Volumetric & True Cash Loss)
     - F05: Shipping Cost Recovery (Net Surplus / Deficit)
     - F09: Channel Margin Divergence (Marketplaces vs Primary)
-    - F10: Return & Refund Profitability
-    - F11: Product True Net Profit
-    - F12: Revenue Leakage Ratio
+    - F10: Product Contribution (SKU True Contribution)
+    - F11: Order Profitability (Order Net Profit)
+    - F12: Revenue Quality Score
 
 Usage:
     python run_full_engine.py
@@ -18,13 +18,13 @@ Usage:
 import logging
 import pandas as pd
 
-from src.scoring.f01_f03 import compute_f03, compute_f01, aggregate_losses
+from src.scoring.f01_f03 import compute_f03, aggregate_f03, compute_f01, aggregate_f01
 from src.scoring.f02 import compute_f02
 from src.scoring.f04 import compute_f04, aggregate_f04
 from src.scoring.f05 import compute_f05, aggregate_f05
 from src.scoring.f09 import compute_f09
-from src.scoring.f10 import compute_f10
-from src.scoring.f11 import compute_f11
+from src.scoring.f10 import compute_f10, aggregate_f10
+from src.scoring.f11 import compute_f11, aggregate_f11
 from src.scoring.f12 import compute_f12
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -60,33 +60,30 @@ def run_all():
     )
     
     scored_f03 = compute_f03(merged_items)
-    f03_res = aggregate_losses(scored_f03, "f03_loss", "f03_breach")
+    f03_res = aggregate_f03(scored_f03)
     
     print("\n--- F03: Margin Floor Breach ---")
     print(f"  Orders Evaluated: {f03_res['orders_evaluated']:,}")
-    print(f"  Unprofitable Orders: {f03_res['orders_flagged']:,} ({f03_res['orders_flagged']/f03_res['orders_evaluated']*100:.2f}%)")
+    print(f"  Unprofitable Orders: {f03_res['orders_flagged']:,} ({f03_res['breach_rate_pct']:.2f}%)")
     print(f"  Total Floor Breach Loss: ${f03_res['total_loss']:,.2f}")
 
-    # F01 on discounted
-    from src.config import TARGET_MARGINS
-    merged_items["target_min_profit"] = merged_items.apply(
-        lambda r: r["selling_price"] * TARGET_MARGINS.get(r["category"], 0.15), axis=1
-    )
-    disc_items = merged_items[merged_items["is_discounted"]].copy()
-    if len(disc_items) > 0:
-        scored_f01 = compute_f01(disc_items)
-        f01_res = aggregate_losses(scored_f01, "f01_loss", "f01_flagged")
-        print("\n--- F01: Promotion Margin Leakage ---")
-        print(f"  Discounted Orders: {f01_res['orders_evaluated']:,}")
-        print(f"  Below-Target Orders: {f01_res['orders_flagged']:,} ({f01_res['orders_flagged']/f01_res['orders_evaluated']*100:.2f}%)")
-        print(f"  Total Promo Leakage: ${f01_res['total_loss']:,.2f}")
+    # F01 on all orders (identifies discounted & breaching floor)
+    scored_f01 = compute_f01(scored_f03)
+    f01_res = aggregate_f01(scored_f01)
+    print("\n--- F01: Promotion Margin Leakage ---")
+    print(f"  Orders Evaluated: {f01_res['orders_evaluated']:,}")
+    print(f"  Discounted Orders: {f01_res['discounted_orders']:,}")
+    print(f"  Below-Target Orders: {f01_res['orders_flagged']:,} "
+          f"(F01 Score: {f01_res['f01_score_pct']:.2f}% of orders, "
+          f"{f01_res['discounted_breach_rate_pct']:.2f}% of promo orders)")
+    print(f"  Total Promo Leakage Loss: ${f01_res['total_loss']:,.2f}")
 
     # -------------------------------------------------------------------
     # F02: Discount Dependency
     # -------------------------------------------------------------------
     f02_res = compute_f02(df_orders, df_line_items)
     print("\n--- F02: Discount Dependency ---")
-    print(f"  Discounted Sales Share: {f02_res['discounted_share']*100:.1f}% (Benchmark: {f02_res['healthy_benchmark']*100:.1f}%)")
+    print(f"  Discounted Sales Share: {f02_res['f02_score_pct']:.1f}% (Benchmark: {f02_res['healthy_benchmark']*100:.1f}%)")
     print(f"  Threshold Breached: {f02_res['is_breached']}")
     print(f"  Average Discount Depth: {f02_res['avg_discount_depth']*100:.1f}%")
     print(f"  Total Discount Dependency Loss: ${f02_res['f02_loss']:,.2f}")
@@ -98,8 +95,8 @@ def run_all():
     f04_res = aggregate_f04(f04_df)
     print("\n--- F04: Free-Shipping Leakage ---")
     print(f"  Orders Evaluated: {f04_res['orders_evaluated']:,}")
-    print(f"  Orders Leaking Cash on Shipping: {f04_res['orders_flagged']:,}")
-    print(f"  Total Free-Shipping Leakage: ${f04_res['total_leakage']:,.2f}")
+    print(f"  Orders Leaking Cash on Shipping: {f04_res['orders_flagged']:,} ({f04_res['leakage_rate_pct']:.2f}%)")
+    print(f"  Total Free-Shipping Net Leakage: ${f04_res['total_leakage']:,.2f}")
 
     # -------------------------------------------------------------------
     # F05: Shipping Cost Recovery
@@ -123,35 +120,37 @@ def run_all():
         print(f"    - {ch.upper():8s} ({data['units_sold']:,} units): loss = ${data['divergence_loss']:,.2f}")
 
     # -------------------------------------------------------------------
-    # F10: Return & Refund Profitability
+    # F10: Product Contribution
     # -------------------------------------------------------------------
-    f10_res = compute_f10(df_orders, df_line_items)
-    print("\n--- F10: Return & Refund Profitability ---")
-    print(f"  Total Items Returned: {f10_res['total_returns']:,} (Return Rate: {f10_res['return_rate_pct']:.1f}%)")
-    print(f"  Refunded Revenue: ${f10_res['total_refunded_amount']:,.2f}")
-    print(f"  Restocking & Logistics Costs: ${f10_res['total_restocking_cost']:,.2f}")
-    print(f"  Total True Return Loss: ${f10_res['total_f10_loss']:,.2f}")
+    f10_df = compute_f10(df_orders, df_line_items)
+    f10_res = aggregate_f10(f10_df)
+    print("\n--- F10: Product Contribution ---")
+    print(f"  Total Active SKUs Evaluated: {f10_res['skus_evaluated']:,}")
+    print(f"  Negative Contribution SKUs: {f10_res['negative_contribution_skus']:,} ({f10_res['negative_sku_pct']:.1f}%)")
+    print(f"  Total Net Merchandise Revenue: ${f10_res['total_net_revenue']:,.2f}")
+    print(f"  Total True Product Contribution: ${f10_res['total_product_contribution']:,.2f} ({f10_res['overall_contribution_margin_pct']:.1f}% margin)")
 
     # -------------------------------------------------------------------
-    # F11: Product True Net Profit
+    # F11: Order Profitability
     # -------------------------------------------------------------------
     f11_df = compute_f11(df_orders, df_line_items)
-    unprofitable_skus = f11_df[f11_df["is_unprofitable_sku"]]
-    print("\n--- F11: SKU True Net Profit ---")
-    print(f"  Total Active SKUs Evaluated: {len(f11_df):,}")
-    print(f"  Unprofitable SKUs Flagged: {len(unprofitable_skus):,} ({len(unprofitable_skus)/len(f11_df)*100:.1f}%)")
-    print(f"  Total Net Profit Generated: ${f11_df['total_net_profit'].sum():,.2f}")
+    f11_res = aggregate_f11(f11_df)
+    print("\n--- F11: Order Profitability ---")
+    print(f"  Total Orders Evaluated: {f11_res['orders_evaluated']:,}")
+    print(f"  Profitable Orders: {f11_res['profitable_orders']:,} | Unprofitable: {f11_res['unprofitable_orders']:,} ({f11_res['unprofitable_order_pct']:.1f}%)")
+    print(f"  Total Revenue Collected: ${f11_res['total_revenue_collected']:,.2f}")
+    print(f"  Total Net Order Profit: ${f11_res['total_order_net_profit']:,.2f} ({f11_res['overall_net_margin_pct']:.1f}% margin)")
 
     # -------------------------------------------------------------------
-    # F12: Revenue Leakage Ratio
+    # F12: Revenue Quality Score
     # -------------------------------------------------------------------
     f12_res = compute_f12(df_orders, df_line_items)
-    print("\n--- F12: Overall Revenue Leakage Ratio ---")
-    print(f"  Gross Revenue: ${f12_res['gross_sales']:,.2f}")
-    print(f"  Total Cumulative Financial Leakage: ${f12_res['total_leakage']:,.2f}")
-    print(f"  Revenue Leakage Ratio: {f12_res['leakage_ratio_pct']:.2f}%")
-    print(f"  Net Revenue Retention: {f12_res['revenue_retention_pct']:.2f}%")
-    print("  Leak Breakdown:")
+    print("\n--- F12: Revenue Quality Score ---")
+    print(f"  Gross Top-Line Revenue: ${f12_res['gross_sales']:,.2f}")
+    print(f"  Total Cumulative Revenue Drains: ${f12_res['total_leakage']:,.2f}")
+    print(f"  Net Retained Revenue: ${f12_res['net_retained_revenue']:,.2f}")
+    print(f"  Revenue Quality Score: {f12_res['revenue_quality_score_pct']:.2f}%")
+    print("  Revenue Drain Breakdown:")
     for leak_type, amt in f12_res["leak_breakdown"].items():
         print(f"    - {leak_type:25s}: ${amt:,.2f} ({amt/f12_res['gross_sales']*100:.2f}%)")
     

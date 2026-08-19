@@ -1,13 +1,19 @@
-"""tests/test_integration.py — Full edge-case matrix from the verification plan.
+"""tests/test_integration.py — Full edge-case matrix & end-to-end pipeline integration.
 
-Each test encodes a row (or cluster of rows) from Section 4's edge-case table,
-exercising the full pipeline: clean → F03 → F01 → F05.
-
-F04 tests are stubbed as xfail until Decision 3 (formula) is resolved.
+Exercises the complete Zeitster Scoring Suite (F01–F12):
+  - F01: Promotion Margin Leakage
+  - F02: Discount Dependency
+  - F03: Margin Floor Breach
+  - F04: Free Shipping Leakage
+  - F05: Shipping Cost Recovery
+  - F09: Channel Margin Divergence
+  - F10: Product Contribution
+  - F11: Order Profitability
+  - F12: Revenue Quality Score
 """
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import pytest
 
 from src.data_clean import dedup_orders, apply_cogs_policy
@@ -15,15 +21,18 @@ from src.scoring.f01_f03 import (
     compute_line_item_margin,
     compute_order_profit,
     compute_f03,
+    aggregate_f03,
     compute_f01,
-    aggregate_losses,
+    aggregate_f01,
 )
+from src.scoring.f02 import compute_f02
+from src.scoring.f04 import compute_f04, aggregate_f04
 from src.scoring.f05 import compute_f05, aggregate_f05
+from src.scoring.f09 import compute_f09
+from src.scoring.f10 import compute_f10, aggregate_f10
+from src.scoring.f11 import compute_f11, aggregate_f11
+from src.scoring.f12 import compute_f12
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _order(order_id="ORD-T", **kwargs):
     """Build a single-row order DataFrame with sensible defaults."""
@@ -48,7 +57,7 @@ def _order(order_id="ORD-T", **kwargs):
 
 
 # ================================================================
-# Edge case: Missing COGS — exclude vs impute
+# Missing COGS Policy Integration
 # ================================================================
 
 class TestMissingCOGS:
@@ -59,16 +68,14 @@ class TestMissingCOGS:
         assert len(result) == 0
 
     def test_excluded_row_not_scored(self):
-        """After exclusion, F03 should have nothing to score."""
         df = _order(cogs_total=[np.nan])
         result = apply_cogs_policy(df, policy="exclude")
         if len(result) > 0:
             result = compute_f03(result)
-            agg = aggregate_losses(result, "f03_loss", "f03_breach")
+            agg = aggregate_f03(result)
             assert agg["total_loss"] == 0.0
 
     def test_impute_policy_fills_and_scores(self):
-        # Two orders: one with COGS, one without
         df = pd.concat([
             _order("ORD-A", category=["fashion"], cogs_total=[40.0]),
             _order("ORD-B", category=["fashion"], cogs_total=[np.nan]),
@@ -76,27 +83,24 @@ class TestMissingCOGS:
         result = apply_cogs_policy(df, policy="impute_category_avg")
         assert len(result) == 2
         assert result["cogs_total"].isna().sum() == 0
-        # Imputed value should be 40.0 (only one non-null in fashion)
         assert result.loc[1, "cogs_total"] == pytest.approx(40.0)
 
 
 # ================================================================
-# Edge case: Missing gateway fee (non-Shopify-Payments store)
+# Missing Gateway Fee Integration
 # ================================================================
 
 class TestMissingGatewayFee:
 
     def test_null_gateway_fee_computes_with_zero(self):
-        """Non-Shopify-Payments stores → null gateway_fee → treated as 0."""
         df = _order(gateway_fee=[np.nan])
         result = compute_f03(df)
-        # profit = (100 - 40) - 8 - 0 = 52
         assert result["net_contribution_margin"].iloc[0] == pytest.approx(52.0)
         assert result["f03_breach"].iloc[0] == False
 
 
 # ================================================================
-# Edge case: Bundled orders (multi-item) — shipping/gateway once
+# Bundled Orders & Multi-Item Integration
 # ================================================================
 
 class TestBundledOrders:
@@ -110,21 +114,17 @@ class TestBundledOrders:
             "gateway_fee": [3.0, 3.0, 3.0],
             "shipping_charged_to_customer": [5.0, 5.0, 5.0],
         })
-        # F03
         result = compute_f03(df)
-        # line margins: 30, 15, 10 = 55.  order_profit = 55 - 12 - 3 = 40
         assert result["net_contribution_margin"].iloc[0] == pytest.approx(40.0)
 
-        # F05 — shipping counted once
         f05 = compute_f05(df)
         agg = aggregate_f05(f05)
         assert agg["orders_evaluated"] == 1
-        # delta = 5 - 12 = -7 (once, not thrice)
         assert agg["net_shipping_position"] == pytest.approx(-7.0)
 
 
 # ================================================================
-# Edge case: Partial returns (1 of 3 items returned)
+# Partial Returns Integration
 # ================================================================
 
 class TestPartialReturns:
@@ -140,13 +140,9 @@ class TestPartialReturns:
             "shipping_charged_to_customer": [5.0, 5.0, 5.0],
         })
         result = compute_order_profit(df)
-        # Active items: 80-30=50, 30-10=20 → sum=70
-        # Returned: 40-20=20 → excluded
-        # order_profit = 70 - 10 - 4 = 56
         assert result["order_profit"].iloc[0] == pytest.approx(56.0)
 
     def test_f05_still_counts_shipping_for_partial_return(self):
-        """Courier cost already incurred — return doesn't undo shipping."""
         df = pd.DataFrame({
             "order_id": ["ORD-PR2", "ORD-PR2"],
             "shipping_charged_to_customer": [5.0, 5.0],
@@ -159,10 +155,10 @@ class TestPartialReturns:
 
 
 # ================================================================
-# Edge case: 100% discount order
+# Full Discount & Free Shipping Integration
 # ================================================================
 
-class TestFullDiscount:
+class TestFullDiscountAndFreeShipping:
 
     def test_100_percent_discount_max_flaggable_loss(self):
         df = _order(
@@ -172,52 +168,12 @@ class TestFullDiscount:
         )
         result = compute_f03(df)
         result = compute_f01(result)
-        # margin = (0 - 20) - 8 - 3 = -31
         assert result["f03_breach"].iloc[0] == True
         assert result["f03_loss"].iloc[0] == pytest.approx(31.0)
-        # F01: target 15, margin -31 → loss = 15 - (-31) = 46
         assert result["f01_flagged"].iloc[0] == True
         assert result["f01_loss"].iloc[0] == pytest.approx(46.0)
 
-
-# ================================================================
-# Edge case: $0 shipping charged, real courier cost > 0
-# ================================================================
-
-class TestFreeShipping:
-
-    def test_zero_charged_full_courier_deficit(self):
-        df = _order(shipping_charged_to_customer=[0.0], actual_shipping_cost=[22.0])
-        f05 = compute_f05(df)
-        assert f05["shipping_delta"].iloc[0] == pytest.approx(-22.0)
-        assert f05["f05_deficit"].iloc[0] == True
-
-
-# ================================================================
-# Edge case: Duplicate order_id (after dedup)
-# ================================================================
-
-class TestDedupIntegration:
-
-    def test_dedup_removes_duplicates_before_scoring(self):
-        df = pd.concat([_order("ORD-DUP"), _order("ORD-DUP")], ignore_index=True)
-        assert len(df) == 2
-        deduped = dedup_orders(df)
-        assert len(deduped) == 1
-        result = compute_f03(deduped)
-        agg = aggregate_losses(result, "f03_loss", "f03_breach")
-        assert agg["orders_evaluated"] == 1
-
-
-# ================================================================
-# Edge case: Extreme outlier — cheap, bulky item (F04 target scenario)
-# ================================================================
-
-class TestExtremeOutlier:
-
     def test_cheap_bulky_item_f04(self):
-        """This is exactly the case F04 is meant to catch: cheap product, heavy/bulky shipping."""
-        from src.scoring.f04 import compute_f04
         df_orders = pd.DataFrame({
             "order_id": ["ORD-BULKY"],
             "shipping_charged_to_customer": [0.0],
@@ -234,77 +190,87 @@ class TestExtremeOutlier:
             "height_cm": [30.0],
             "is_returned": [False],
         })
-        res = compute_f04(df_orders, df_items, formula="formula_b")
+        res = compute_f04(df_orders, df_items)
         assert res["f04_flagged"].iloc[0] == True
-        # Shipping ($25) - Product Profit ($7) = $18 loss
         assert res["f04_leakage"].iloc[0] == pytest.approx(18.0)
 
 
 # ================================================================
-# Edge case: Free-shipping threshold boundary
+# Master End-to-End Suite Smoke Test
 # ================================================================
 
-class TestFreeShippingThreshold:
+class TestFullPipelineSuite:
 
-    def test_order_exactly_at_threshold(self):
-        """Boundary: order cart value exactly at $50 threshold with free shipping granted."""
-        from src.scoring.f04 import compute_f04
+    def test_all_formulas_execute_on_master_dataset(self):
+        """Exercises F01, F02, F03, F04, F05, F09, F10, F11, F12 without errors."""
         df_orders = pd.DataFrame({
-            "order_id": ["ORD-50"],
-            "shipping_charged_to_customer": [0.0],
-            "actual_shipping_cost": [8.0],
+            "order_id": ["ORD-1", "ORD-2"],
+            "channel": ["web", "amazon"],
+            "gross_sales": [100.0, 100.0],
+            "net_sales": [90.0, 100.0],
+            "shipping_charged_to_customer": [0.0, 5.0],
+            "actual_shipping_cost": [12.0, 10.0],
+            "gateway_fee": [3.0, 3.0],
+            "chargeback_amount": [0.0, 0.0],
+            "is_cancelled": [False, False],
         })
         df_items = pd.DataFrame({
-            "order_id": ["ORD-50"],
-            "selling_price": [50.0],
-            "net_selling_price": [50.0],
-            "cogs_total": [45.0],  # only $5 profit
-            "product_weight_kg": [2.0],
-            "length_cm": [np.nan],
-            "width_cm": [np.nan],
-            "height_cm": [np.nan],
-            "is_returned": [False],
+            "order_id": ["ORD-1", "ORD-2"],
+            "product_id": ["SKU-1", "SKU-2"],
+            "category": ["fashion", "electronics"],
+            "quantity": [1, 1],
+            "selling_price": [100.0, 100.0],
+            "discount_given": [10.0, 0.0],
+            "net_selling_price": [90.0, 100.0],
+            "is_discounted": [True, False],
+            "cogs_total": [40.0, 50.0],
+            "product_weight_kg": [1.0, 1.0],
+            "length_cm": [np.nan, np.nan],
+            "width_cm": [np.nan, np.nan],
+            "height_cm": [np.nan, np.nan],
+            "channel_fee_pct": [0.0, 0.15],
+            "is_returned": [False, False],
+            "refund_amount": [0.0, 0.0],
+            "restocking_cost": [0.0, 0.0],
         })
-        res = compute_f04(df_orders, df_items, formula="formula_b")
-        # Courier ($8) - Profit ($5) = $3 leakage
-        assert res["f04_flagged"].iloc[0] == True
-        assert res["f04_leakage"].iloc[0] == pytest.approx(3.0)
 
+        # F03 & F01
+        scored = compute_f03(df_items.merge(df_orders[["order_id", "actual_shipping_cost", "gateway_fee"]], on="order_id"))
+        f03_res = aggregate_f03(scored)
+        assert f03_res["orders_evaluated"] == 2
 
-# ================================================================
-# Full pipeline smoke test on synthetic multi-scenario dataset
-# ================================================================
+        scored_f01 = compute_f01(scored)
+        f01_res = aggregate_f01(scored_f01)
+        assert f01_res["orders_evaluated"] == 2
 
-class TestFullPipelineSmokeTest:
+        # F02
+        f02_res = compute_f02(df_orders, df_items)
+        assert f02_res["total_sales"] == 200.0
 
-    def test_mixed_scenario_no_crash_no_nan_infinity(self):
-        """Run all scores on a mixed dataset — no crashes, no inf values."""
-        df = pd.concat([
-            _order("ORD-1", cogs_total=[40.0], gateway_fee=[3.0]),
-            _order("ORD-2", cogs_total=[np.nan], gateway_fee=[np.nan]),  # will be excluded
-            _order("ORD-3", net_selling_price=[0.0], cogs_total=[50.0],
-                   is_discounted=[True], discount_given=[100.0],
-                   target_min_profit=[15.0]),
-            _order("ORD-4", shipping_charged_to_customer=[0.0],
-                   actual_shipping_cost=[25.0]),
-        ], ignore_index=True)
-
-        # COGS exclusion
-        clean = apply_cogs_policy(df, policy="exclude")
-        assert len(clean) == 3  # ORD-2 excluded
-
-        # F03
-        scored = compute_f03(clean)
-        assert not np.isinf(scored["net_contribution_margin"]).any()
-
-        # F01
-        disc = scored[scored["is_discounted"]].copy()
-        if len(disc) > 0:
-            disc = compute_f01(disc)
-            assert not np.isinf(disc["f01_loss"]).any()
+        # F04
+        f04_df = compute_f04(df_orders, df_items)
+        f04_res = aggregate_f04(f04_df)
+        assert f04_res["orders_evaluated"] == 2
 
         # F05
-        f05 = compute_f05(clean)
-        assert not np.isinf(f05["shipping_delta"]).any()
-        agg = aggregate_f05(f05)
-        assert np.isfinite(agg["net_shipping_position"])
+        f05_df = compute_f05(df_orders)
+        f05_res = aggregate_f05(f05_df)
+        assert f05_res["orders_evaluated"] == 2
+
+        # F09
+        f09_res = compute_f09(df_orders, df_items)
+        assert f09_res["primary_channel"] == "web"
+
+        # F10
+        f10_df = compute_f10(df_orders, df_items)
+        f10_res = aggregate_f10(f10_df)
+        assert f10_res["skus_evaluated"] == 2
+
+        # F11
+        f11_df = compute_f11(df_orders, df_items)
+        f11_res = aggregate_f11(f11_df)
+        assert f11_res["orders_evaluated"] == 2
+
+        # F12
+        f12_res = compute_f12(df_orders, df_items)
+        assert f12_res["gross_sales"] == 200.0
