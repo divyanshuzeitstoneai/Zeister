@@ -159,36 +159,29 @@ class TestRecomputeTargetMinProfit:
         flat_margins = {cat: 0.15 for cat in ["fashion", "beauty", "electronics"]}
         result = recompute_target_min_profit(df, margins=flat_margins)
         for _, row in result.iterrows():
-            assert row["target_min_profit"] == pytest.approx(row["selling_price"] * 0.15)
+            assert row["target_min_profit"] == pytest.approx(row["net_selling_price"] * 0.15)
 
     def test_category_specific_margins(self):
         custom = {"fashion": 0.20, "beauty": 0.10, "electronics": 0.08}
         df = _make_df()
         result = recompute_target_min_profit(df, margins=custom)
-        assert result.loc[0, "target_min_profit"] == pytest.approx(100.0 * 0.20)
-        assert result.loc[1, "target_min_profit"] == pytest.approx(50.0 * 0.10)
+        assert result.loc[0, "target_min_profit"] == pytest.approx(90.0 * 0.20)
+        assert result.loc[1, "target_min_profit"] == pytest.approx(45.0 * 0.10)
         assert result.loc[2, "target_min_profit"] == pytest.approx(200.0 * 0.08)
 
     def test_unknown_category_uses_default(self):
         df = _make_df(category=["unknown_cat", "beauty", "electronics"])
         result = recompute_target_min_profit(df, default=0.12)
-        # "unknown_cat" not in TARGET_MARGINS → uses default 12%
-        assert result.loc[0, "target_min_profit"] == pytest.approx(100.0 * 0.12)
+        assert result.loc[0, "target_min_profit"] == pytest.approx(90.0 * 0.12)
 
-
-# ---------------------------------------------------------------------------
-# Full pipeline
-# ---------------------------------------------------------------------------
 
 class TestCleanPipeline:
 
     def test_full_pipeline_dedup_and_validate(self):
         df = _make_df(order_id=["ORD-001", "ORD-001", "ORD-002"])
         result = clean_pipeline(df, recompute_targets=True)
-        # dedup: 3 → 2
         assert len(result) == 2
-        # targets recomputed per category config (row 0: fashion 15%, row 1: electronics 8%)
-        assert result.loc[0, "target_min_profit"] == pytest.approx(100.0 * 0.15)
+        assert result.loc[0, "target_min_profit"] == pytest.approx(90.0 * 0.15)
         assert result.loc[1, "target_min_profit"] == pytest.approx(200.0 * 0.08)
 
     def test_pipeline_with_cogs_exclude(self):

@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from src.config import HEALTHY_DISCOUNT_SHARE
+from src.config import HEALTHY_DISCOUNT_SHARE, WARNING_DISCOUNT_SHARE
 
 
 def compute_f02(
     df_orders: pd.DataFrame, 
     df_line_items: pd.DataFrame,
     healthy_share: float | None = None,
+    warning_share: float | None = None,
 ) -> dict:
-    """Computes store-level F02 Discount Dependency score and excess loss."""
+    """Computes store-level F02 Discount Dependency score, status bucket, and excess loss."""
     healthy_share = healthy_share if healthy_share is not None else HEALTHY_DISCOUNT_SHARE
+    warning_share = warning_share if warning_share is not None else WARNING_DISCOUNT_SHARE
 
     if "is_cancelled" in df_orders.columns:
         valid_order_ids = set(df_orders[~df_orders["is_cancelled"]]["order_id"])
@@ -29,6 +31,8 @@ def compute_f02(
             "discounted_share": 0.0,
             "f02_score_pct": 0.0,
             "healthy_benchmark": healthy_share,
+            "warning_benchmark": warning_share,
+            "health_status": "HEALTHY",
             "excess_share": 0.0,
             "is_breached": False,
             "avg_discount_depth": 0.0,
@@ -56,12 +60,21 @@ def compute_f02(
     is_breached = excess_share > 0.0
     f02_loss = total_gross_sales * excess_share * avg_discount_depth
 
+    if discounted_share <= healthy_share:
+        health_status = "HEALTHY"
+    elif discounted_share <= warning_share:
+        health_status = "WARNING"
+    else:
+        health_status = "EXCESSIVE"
+
     return {
         "total_sales": total_gross_sales,
         "discounted_sales": disc_sales,
         "discounted_share": discounted_share,
         "f02_score_pct": f02_score_pct,
         "healthy_benchmark": healthy_share,
+        "warning_benchmark": warning_share,
+        "health_status": health_status,
         "excess_share": excess_share,
         "is_breached": is_breached,
         "avg_discount_depth": avg_discount_depth,

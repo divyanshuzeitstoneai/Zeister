@@ -1,10 +1,4 @@
-"""src/data_clean.py — Data-integrity pipeline: dedup, validation, COGS policy.
-
-Run standalone:
-    python -m src.data_clean data/synthetic_1m_orders.csv.gz data/synthetic_1m_orders_clean.csv.gz
-
-Or import the functions into any pipeline script.
-"""
+"""src/data_clean.py — Data-integrity pipeline: dedup, validation, COGS policy."""
 
 from __future__ import annotations
 
@@ -19,15 +13,8 @@ from src.config import COGS_POLICY, TARGET_MARGINS, DEFAULT_TARGET_MARGIN, REQUI
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# 1.5 — Deduplication
-# ---------------------------------------------------------------------------
-
 def dedup_orders(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove duplicate ``order_id`` rows, keeping the first occurrence.
-
-    Logs the number of rows dropped so the caller can audit the impact.
-    """
+    """Remove duplicate order_id rows, keeping the first occurrence."""
     n_before = len(df)
     df = df.drop_duplicates(subset="order_id", keep="first")
     n_dropped = n_before - len(df)
@@ -37,23 +24,9 @@ def dedup_orders(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
 def validate_required_columns(df: pd.DataFrame,
                                columns: list[str] | None = None) -> pd.DataFrame:
-    """Assert that *columns* exist and contain no nulls.
-
-    Parameters
-    ----------
-    df : DataFrame
-    columns : list of column names.  Defaults to ``REQUIRED_ORDER_COLUMNS``.
-
-    Returns
-    -------
-    df (unchanged) — raises ``ValueError`` if validation fails.
-    """
+    """Assert that required columns exist and contain no nulls."""
     columns = columns or REQUIRED_ORDER_COLUMNS
     missing_cols = [c for c in columns if c not in df.columns]
     if missing_cols:
@@ -69,22 +42,16 @@ def validate_required_columns(df: pd.DataFrame,
     return df
 
 
-# ---------------------------------------------------------------------------
-# 1.4 — COGS policy
-# ---------------------------------------------------------------------------
-
 def apply_cogs_policy(df: pd.DataFrame,
                        policy: Literal["exclude", "impute_category_avg"] | None = None,
                        ) -> pd.DataFrame:
-    """Handle rows where ``cogs_total`` is null.
-
-    Parameters
-    ----------
-    policy : ``"exclude"`` drops rows; ``"impute_category_avg"`` fills nulls
-             with the category-level average COGS.  Defaults to
-             ``config.COGS_POLICY``.
-    """
+    """Handle rows where cogs_total is null and flag estimated COGS."""
     policy = policy or COGS_POLICY
+    df = df.copy()
+    
+    if "is_cogs_estimated" not in df.columns:
+        df["is_cogs_estimated"] = False
+
     n_null = df["cogs_total"].isna().sum()
     if n_null == 0:
         return df
@@ -95,86 +62,52 @@ def apply_cogs_policy(df: pd.DataFrame,
         return df.dropna(subset=["cogs_total"]).reset_index(drop=True)
 
     if policy == "impute_category_avg":
-        # Compute category-average COGS from rows that DO have a value
-        cat_avg = df.groupby("category")["cogs_total"].transform("mean")
+        missing_mask = df["cogs_total"].isna()
+        if "category" in df.columns:
+            cat_avg = df.groupby("category")["cogs_total"].transform("mean")
+        else:
+            cat_avg = pd.Series(np.nan, index=df.index)
+        
         global_avg = df["cogs_total"].mean()
+        # Fallback to category average, then global average
         imputed = df["cogs_total"].fillna(cat_avg).fillna(global_avg)
-        n_imputed = imputed.notna().sum() - df["cogs_total"].notna().sum()
-        logger.info("COGS policy 'impute_category_avg': imputed %d rows", n_imputed)
-        df = df.copy()
+        
         df["cogs_total"] = imputed
-        df["cogs_imputed"] = df.index.isin(
-            df.index[df["cogs_total"].isna()]  # mark the ones we just filled
-        )
+        df["is_cogs_estimated"] = missing_mask
+        df["cogs_imputed"] = missing_mask  # backward compatibility alias
         return df
 
     raise ValueError(f"Unknown COGS policy: {policy!r}")
 
 
-# ---------------------------------------------------------------------------
-# 1.3 — Consistent target-min-profit
-# ---------------------------------------------------------------------------
-
 def recompute_target_min_profit(df: pd.DataFrame,
                                  margins: dict[str, float] | None = None,
                                  default: float | None = None) -> pd.DataFrame:
-    """(Re)compute ``target_min_profit`` from ``selling_price`` × category margin.
-
-    Uses ``config.TARGET_MARGINS`` and ``config.DEFAULT_TARGET_MARGIN``
-    unless overridden.
-    """
+    """Computes target_min_profit using NET SELLING PRICE after discounts."""
     margins = margins or TARGET_MARGINS
     default = default if default is not None else DEFAULT_TARGET_MARGIN
     df = df.copy()
+    
+    price_col = (
+        "net_selling_price"
+        if "net_selling_price" in df.columns
+        else ("net_sales" if "net_sales" in df.columns else "selling_price")
+    )
+    
     df["target_min_profit"] = df.apply(
-        lambda row: row["selling_price"] * margins.get(row["category"], default),
+        lambda row: row[price_col] * margins.get(row["category"], default) if "category" in row else row[price_col] * default,
         axis=1,
     )
     return df
 
 
-# ---------------------------------------------------------------------------
-# Full pipeline
-# ---------------------------------------------------------------------------
-
 def clean_pipeline(df: pd.DataFrame,
                     cogs_policy: str | None = None,
                     recompute_targets: bool = True) -> pd.DataFrame:
-    """Run the full cleaning pipeline in order.
-
-    1. Dedup on ``order_id``
-    2. Validate required columns
-    3. Apply COGS policy
-    4. Optionally recompute ``target_min_profit`` from config
-
-    Returns the cleaned DataFrame.
-    """
+    """Run data cleaning and normalization pipeline."""
     df = dedup_orders(df)
     validate_required_columns(df)
     df = apply_cogs_policy(df, policy=cogs_policy)
     if recompute_targets:
         df = recompute_target_min_profit(df)
     return df
-
-
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import sys
-
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-    in_path = sys.argv[1] if len(sys.argv) > 1 else "data/synthetic_1m_orders.csv.gz"
-    out_path = sys.argv[2] if len(sys.argv) > 2 else "data/synthetic_1m_orders_clean.csv.gz"
-
-    logger.info("Reading %s ...", in_path)
-    raw = pd.read_csv(in_path, compression="gzip")
-    logger.info("Loaded %d rows", len(raw))
-
-    cleaned = clean_pipeline(raw)
-    logger.info("Cleaned dataset: %d rows", len(cleaned))
-
-    cleaned.to_csv(out_path, index=False, compression="gzip")
-    logger.info("Written to %s", out_path)

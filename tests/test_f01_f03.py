@@ -176,9 +176,9 @@ class TestF01PromotionMarginLeakage:
             "gateway_fee": [3.0, 3.0, 2.0],
         })
         result = compute_f01(df)
-        assert result.loc[result["category"] == "fashion", "f01_loss"].iloc[0] == pytest.approx(3.0)
-        assert result.loc[result["category"] == "beauty", "f01_loss"].iloc[0] == pytest.approx(8.0)
-        assert result.loc[result["category"] == "electronics", "f01_loss"].iloc[0] == pytest.approx(3.0)
+        assert result.loc[result["category"] == "fashion", "f01_loss"].iloc[0] == pytest.approx(1.50)
+        assert result.loc[result["category"] == "beauty", "f01_loss"].iloc[0] == pytest.approx(6.00)
+        assert result.loc[result["category"] == "electronics", "f01_loss"].iloc[0] == pytest.approx(2.20)
 
     def test_f01_order_percentage_score_aggregation(self):
         df = pd.DataFrame({

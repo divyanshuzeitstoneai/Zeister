@@ -135,7 +135,7 @@ def compute_f01(
             df["is_discounted"] = False
 
     if "target_min_profit" not in df.columns:
-        price_col = "selling_price" if "selling_price" in df.columns else "net_selling_price"
+        price_col = "net_selling_price" if "net_selling_price" in df.columns else ("net_sales" if "net_sales" in df.columns else ("selling_price" if "selling_price" in df.columns else "gross_sales"))
         if "category" in df.columns:
             rates = df["category"].map(target_margins).fillna(default_target)
             df["target_min_profit"] = df[price_col] * rates
