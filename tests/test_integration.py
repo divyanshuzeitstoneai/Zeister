@@ -1,16 +1,4 @@
-"""tests/test_integration.py — Full edge-case matrix & end-to-end pipeline integration.
-
-Exercises the complete Zeitster Scoring Suite (F01–F12):
-  - F01: Promotion Margin Leakage
-  - F02: Discount Dependency
-  - F03: Margin Floor Breach
-  - F04: Free Shipping Leakage
-  - F05: Shipping Cost Recovery
-  - F09: Channel Margin Divergence
-  - F10: Product Contribution
-  - F11: Order Profitability
-  - F12: Revenue Quality Score
-"""
+"""Tests for full edge-case matrix and end-to-end integration across F01–F12."""
 
 import numpy as np
 import pandas as pd
@@ -35,7 +23,6 @@ from src.scoring.f12 import compute_f12
 
 
 def _order(order_id="ORD-T", **kwargs):
-    """Build a single-row order DataFrame with sensible defaults."""
     base = {
         "order_id": [order_id],
         "category": ["fashion"],
@@ -55,10 +42,6 @@ def _order(order_id="ORD-T", **kwargs):
     base.update(kwargs)
     return pd.DataFrame(base)
 
-
-# ================================================================
-# Missing COGS Policy Integration
-# ================================================================
 
 class TestMissingCOGS:
 
@@ -86,10 +69,6 @@ class TestMissingCOGS:
         assert result.loc[1, "cogs_total"] == pytest.approx(40.0)
 
 
-# ================================================================
-# Missing Gateway Fee Integration
-# ================================================================
-
 class TestMissingGatewayFee:
 
     def test_null_gateway_fee_computes_with_zero(self):
@@ -98,10 +77,6 @@ class TestMissingGatewayFee:
         assert result["net_contribution_margin"].iloc[0] == pytest.approx(52.0)
         assert result["f03_breach"].iloc[0] == False
 
-
-# ================================================================
-# Bundled Orders & Multi-Item Integration
-# ================================================================
 
 class TestBundledOrders:
 
@@ -122,10 +97,6 @@ class TestBundledOrders:
         assert agg["orders_evaluated"] == 1
         assert agg["net_shipping_position"] == pytest.approx(-7.0)
 
-
-# ================================================================
-# Partial Returns Integration
-# ================================================================
 
 class TestPartialReturns:
 
@@ -153,10 +124,6 @@ class TestPartialReturns:
         agg = aggregate_f05(f05)
         assert agg["net_shipping_position"] == pytest.approx(-7.0)
 
-
-# ================================================================
-# Full Discount & Free Shipping Integration
-# ================================================================
 
 class TestFullDiscountAndFreeShipping:
 
@@ -195,14 +162,9 @@ class TestFullDiscountAndFreeShipping:
         assert res["f04_leakage"].iloc[0] == pytest.approx(18.0)
 
 
-# ================================================================
-# Master End-to-End Suite Smoke Test
-# ================================================================
-
 class TestFullPipelineSuite:
 
     def test_all_formulas_execute_on_master_dataset(self):
-        """Exercises F01, F02, F03, F04, F05, F09, F10, F11, F12 without errors."""
         df_orders = pd.DataFrame({
             "order_id": ["ORD-1", "ORD-2"],
             "channel": ["web", "amazon"],
@@ -234,7 +196,6 @@ class TestFullPipelineSuite:
             "restocking_cost": [0.0, 0.0],
         })
 
-        # F03 & F01
         scored = compute_f03(df_items.merge(df_orders[["order_id", "actual_shipping_cost", "gateway_fee"]], on="order_id"))
         f03_res = aggregate_f03(scored)
         assert f03_res["orders_evaluated"] == 2
@@ -243,34 +204,27 @@ class TestFullPipelineSuite:
         f01_res = aggregate_f01(scored_f01)
         assert f01_res["orders_evaluated"] == 2
 
-        # F02
         f02_res = compute_f02(df_orders, df_items)
         assert f02_res["total_sales"] == 200.0
 
-        # F04
         f04_df = compute_f04(df_orders, df_items)
         f04_res = aggregate_f04(f04_df)
         assert f04_res["orders_evaluated"] == 2
 
-        # F05
         f05_df = compute_f05(df_orders)
         f05_res = aggregate_f05(f05_df)
         assert f05_res["orders_evaluated"] == 2
 
-        # F09
         f09_res = compute_f09(df_orders, df_items)
         assert f09_res["primary_channel"] == "web"
 
-        # F10
         f10_df = compute_f10(df_orders, df_items)
         f10_res = aggregate_f10(f10_df)
-        assert f10_res["skus_evaluated"] == 2
+        assert f10_res["total_skus_evaluated"] == 2
 
-        # F11
         f11_df = compute_f11(df_orders, df_items)
         f11_res = aggregate_f11(f11_df)
         assert f11_res["orders_evaluated"] == 2
 
-        # F12
         f12_res = compute_f12(df_orders, df_items)
         assert f12_res["gross_sales"] == 200.0

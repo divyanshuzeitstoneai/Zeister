@@ -1,16 +1,4 @@
-"""tests/test_f12.py — Comprehensive Tests for F12 Revenue Quality Score.
-
-Validates the business reconciliation formula:
-    Gross Merchandise Revenue
-    − Discounts
-    − Refunds & Restocking
-    − Dispute Chargebacks
-    − Outbound Shipping Deficits
-    − Payment Gateway Fees
-    = Net Retained Revenue
-
-    Revenue Quality Score (%) = (Net Retained Revenue / Gross Revenue) × 100
-"""
+"""Tests for F12 Revenue Quality Score."""
 
 import pandas as pd
 import pytest
@@ -18,18 +6,6 @@ from src.scoring.f12 import compute_f12
 
 
 def test_f12_full_reconciliation_example():
-    """Complete multi-drain reconciliation example:
-    Gross Revenue: $1,000.00
-    - Discounts: $100.00
-    - Refunds & Restocking: $150.00 ($120 refund + $30 restock)
-    - Shipping Deficit: $40.00 ($50 actual - $10 charged)
-    - Gateway Fees: $30.00
-    - Chargebacks: $80.00
-    Total Drains / Leakage = $400.00
-    Net Retained Revenue = $1,000 - $400 = $600.00
-    Revenue Quality Score = 60.00%
-    Leakage Ratio = 40.00%
-    """
     df_orders = pd.DataFrame({
         "order_id": ["ORD-1"],
         "gross_sales": [1000.0],
@@ -63,11 +39,10 @@ def test_f12_full_reconciliation_example():
 
 
 def test_f12_zero_leakage_100_percent_quality():
-    """Store with zero leakage -> 100% Revenue Quality Score."""
     df_orders = pd.DataFrame({
         "order_id": ["ORD-PERFECT"],
         "shipping_charged_to_customer": [15.0],
-        "actual_shipping_cost": [10.0],  # Surplus, not deficit
+        "actual_shipping_cost": [10.0],
         "gateway_fee": [0.0],
         "chargeback_amount": [0.0],
         "is_cancelled": [False],
@@ -91,7 +66,6 @@ def test_f12_zero_leakage_100_percent_quality():
 
 
 def test_f12_100_percent_leakage_0_percent_quality():
-    """100% discount order -> 0% Revenue Quality Score."""
     df_orders = pd.DataFrame({
         "order_id": ["ORD-ZERO-RET"],
         "shipping_charged_to_customer": [0.0],
@@ -119,7 +93,6 @@ def test_f12_100_percent_leakage_0_percent_quality():
 
 
 def test_f12_negative_retained_revenue():
-    """Severe returns, chargebacks, and shipping exceed gross sales -> Quality Score < 0."""
     df_orders = pd.DataFrame({
         "order_id": ["ORD-NEG"],
         "shipping_charged_to_customer": [0.0],
@@ -137,9 +110,6 @@ def test_f12_negative_retained_revenue():
         "refund_amount": [100.0],
         "restocking_cost": [20.0],
     })
-    # Total leakage = 0 (disc) + 120 (returns) + 50 (ship) + 10 (gw) + 100 (cb) = 280.
-    # Net retained = 100 - 280 = -180.
-    # Score = -180 / 100 = -180.0%
     res = compute_f12(df_orders, df_items)
     assert res["total_leakage"] == pytest.approx(280.0)
     assert res["net_retained_revenue"] == pytest.approx(-180.0)
@@ -147,7 +117,6 @@ def test_f12_negative_retained_revenue():
 
 
 def test_f12_zero_gross_sales():
-    """Zero gross sales returns cleanly."""
     df_orders = pd.DataFrame({"order_id": ["ORD-EMPTY"], "is_cancelled": [False]})
     df_items = pd.DataFrame({
         "order_id": ["ORD-EMPTY"],

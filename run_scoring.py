@@ -1,9 +1,4 @@
-"""run_scoring.py — Full scoring pipeline: clean → F03 → F01 → F05.
-
-Usage:
-    python run_scoring.py                           # uses cleaned dataset
-    python run_scoring.py data/synthetic_1m_orders.csv.gz  # cleans on the fly
-"""
+"""Scoring pipeline runner."""
 
 import logging
 import sys
@@ -17,31 +12,18 @@ from src.scoring.f05 import compute_f05, aggregate_f05
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Load and clean
-# ---------------------------------------------------------------------------
-
 DATA_PATH = sys.argv[1] if len(sys.argv) > 1 else "data/synthetic_1m_orders_clean.csv.gz"
 
 df = pd.read_csv(DATA_PATH, compression="gzip")
 logger.info("Loaded %s rows from %s", f"{len(df):,}", DATA_PATH)
 
-# If using the raw dataset, clean on the fly; if using _clean, this is ~a no-op
 df = clean_pipeline(df, recompute_targets=True)
 logger.info("After cleaning: %s rows", f"{len(df):,}")
-
-# ---------------------------------------------------------------------------
-# Exclude returns
-# ---------------------------------------------------------------------------
 
 active = df[~df["is_returned"]].copy()
 logger.info("Excluded %s refunded orders (%.1f%%)",
             f"{df['is_returned'].sum():,}",
             df["is_returned"].sum() / len(df) * 100)
-
-# ---------------------------------------------------------------------------
-# F03 — Margin Floor Breach
-# ---------------------------------------------------------------------------
 
 scored = compute_f03(active)
 f03_result = aggregate_f03(scored)
@@ -50,30 +32,19 @@ print("\n" + "=" * 60)
 print("F03 — Margin Floor Breach")
 print("=" * 60)
 print(f"  Orders evaluated:  {f03_result['orders_evaluated']:,}")
-print(f"  Orders flagged:    {f03_result['orders_flagged']:,} "
-      f"({f03_result['breach_rate_pct']:.2f}%)")
+print(f"  Orders flagged:    {f03_result['orders_flagged']:,} ({f03_result['breach_rate_pct']:.2f}%)")
 print(f"  Total loss:        ${f03_result['total_loss']:,.2f}")
 
-# ---------------------------------------------------------------------------
-# F01 — Promotion Margin Leakage
-# ---------------------------------------------------------------------------
-
-scored_f01 = compute_f01(scored)
-f01_result = aggregate_f01(scored_f01)
+f01_scored = compute_f01(active)
+f01_result = aggregate_f01(f01_scored)
 
 print("\n" + "=" * 60)
 print("F01 — Promotion Margin Leakage")
 print("=" * 60)
 print(f"  Orders evaluated:  {f01_result['orders_evaluated']:,}")
 print(f"  Discounted orders: {f01_result['discounted_orders']:,}")
-print(f"  Orders flagged:    {f01_result['orders_flagged']:,} "
-      f"(F01 Score: {f01_result['f01_score_pct']:.2f}% of total orders, "
-      f"{f01_result['discounted_breach_rate_pct']:.2f}% of promo orders)")
+print(f"  Orders flagged:    {f01_result['orders_flagged']:,} (F01 Score: {f01_result['f01_score_pct']:.2f}% of total orders, {f01_result['discounted_breach_rate_pct']:.2f}% of promo orders)")
 print(f"  Total promo loss:  ${f01_result['total_loss']:,.2f}")
-
-# ---------------------------------------------------------------------------
-# F05 — Shipping Cost Recovery (all orders, net aggregation)
-# ---------------------------------------------------------------------------
 
 f05_scored = compute_f05(active)
 f05_result = aggregate_f05(f05_scored)

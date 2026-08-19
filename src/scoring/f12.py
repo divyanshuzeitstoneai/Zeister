@@ -1,22 +1,4 @@
-"""src/scoring/f12.py — F12: Revenue Quality Score.
-
-Business Definition:
-    F12 measures the Revenue Quality Score:
-    the percentage of gross top-line merchandise revenue that remains as net
-    retained revenue after accounting for all defined operational drains.
-
-Reconciliation:
-    Gross Merchandise Revenue
-    − Promotional Discounts
-    − Customer Refunds & Restocking
-    − Dispute Chargebacks
-    − Outbound Shipping Deficits (Unrecovered Courier Costs)
-    − Payment Processing / Gateway Fees
-    = Net Retained Revenue
-
-    Revenue Quality Score (%) = (Net Retained Revenue / Gross Merchandise Revenue) × 100
-    Revenue Leakage Ratio (%) = (Total Revenue Drains / Gross Merchandise Revenue) × 100
-"""
+"""F12: Revenue Quality Score."""
 
 from __future__ import annotations
 
@@ -25,18 +7,7 @@ import pandas as pd
 
 
 def compute_f12(df_orders: pd.DataFrame, df_line_items: pd.DataFrame | None = None) -> dict:
-    """Computes store-level F12 Revenue Quality Score.
-
-    Parameters:
-        df_orders: Order-level DataFrame (contains order_id, gross_sales/net_sales,
-                   shipping_charged_to_customer, actual_shipping_cost, gateway_fee,
-                   chargeback_amount, is_cancelled)
-        df_line_items: Line-item level DataFrame (optional, contains selling_price, discount_given, returns)
-
-    Returns:
-        Comprehensive dictionary of financial leakage components and the overall Revenue Quality Score.
-    """
-    # Active orders (not cancelled)
+    """Computes store-level F12 Revenue Quality Score and drain reconciliation."""
     if "is_cancelled" in df_orders.columns:
         orders = df_orders[~df_orders["is_cancelled"]].copy()
     else:
@@ -63,7 +34,6 @@ def compute_f12(df_orders: pd.DataFrame, df_line_items: pd.DataFrame | None = No
         else:
             total_discounts = 0.0
         
-        # Refunds & Restocking
         if "is_returned" in items.columns:
             returned = items[items["is_returned"]]
             if "refund_amount" in returned.columns:
@@ -106,19 +76,14 @@ def compute_f12(df_orders: pd.DataFrame, df_line_items: pd.DataFrame | None = No
             },
         }
 
-    # Shipping Deficits (unrecovered shipping costs where courier > charged)
     charged_shipping = orders["shipping_charged_to_customer"].fillna(0.0) if "shipping_charged_to_customer" in orders.columns else 0.0
     actual_shipping = orders["actual_shipping_cost"].fillna(0.0) if "actual_shipping_cost" in orders.columns else 0.0
     shipping_deficit = np.maximum(0.0, actual_shipping - charged_shipping)
     total_shipping_deficit = float(shipping_deficit.sum()) if hasattr(shipping_deficit, "sum") else 0.0
 
-    # Gateway Fees
     total_gateway_fees = float(orders["gateway_fee"].fillna(0.0).sum()) if "gateway_fee" in orders.columns else 0.0
-
-    # Chargebacks & Disputes
     total_chargebacks = float(orders["chargeback_amount"].fillna(0.0).sum()) if "chargeback_amount" in orders.columns else 0.0
 
-    # Total Leakage Sum
     total_leakage = (
         total_discounts
         + total_return_loss
@@ -137,7 +102,7 @@ def compute_f12(df_orders: pd.DataFrame, df_line_items: pd.DataFrame | None = No
         "total_leakage": total_leakage,
         "revenue_quality_score_pct": revenue_quality_score_pct,
         "leakage_ratio_pct": leakage_ratio_pct,
-        "revenue_retention_pct": revenue_quality_score_pct,  # backward compatibility alias
+        "revenue_retention_pct": revenue_quality_score_pct,
         "leak_breakdown": {
             "discounts": total_discounts,
             "returns_and_restocking": total_return_loss,

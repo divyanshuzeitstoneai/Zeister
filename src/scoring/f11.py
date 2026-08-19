@@ -1,24 +1,4 @@
-"""src/scoring/f11.py — F11: Order Profitability Score.
-
-Business Definition:
-    F11 calculates order-level bottom-line true net profitability by deducting all
-    direct and expected operational costs from total revenue collected:
-
-    Order Net Profit =
-        Total Money Collected (Net Merchandise Revenue + Shipping Charged)
-        − COGS
-        − Outbound Courier Shipping Cost
-        − Payment Gateway Fees
-        − Expected (or Actual) Return & Refund Cost
-
-Business Example:
-    Collected Revenue = $80.00 (after discount)
-    COGS = $50.00
-    Courier Shipping = $22.00
-    Gateway Fee = $3.00
-    Expected Refund Cost = $8.00
-    -> Order Net Profit = 80 - 50 - 22 - 3 - 8 = -$3.00
-"""
+"""F11: Order Profitability Score."""
 
 from __future__ import annotations
 
@@ -31,20 +11,9 @@ def compute_f11(
     df_line_items: pd.DataFrame | None = None,
     expected_refund_rate: float | None = None,
 ) -> pd.DataFrame:
-    """Computes order-level F11 Order Profitability.
-
-    Parameters:
-        df_orders: Order-level DataFrame (contains order_id, shipping_charged_to_customer,
-                   actual_shipping_cost, gateway_fee, is_cancelled, optional expected_refund_cost)
-        df_line_items: Line-item level DataFrame (contains order_id, net_selling_price, cogs_total)
-        expected_refund_rate: Optional baseline return rate for estimating refund costs (if not explicit)
-
-    Returns:
-        DataFrame at order level with full order profitability ledger.
-    """
+    """Computes order-level net profitability after COGS, shipping, gateway, and refund costs."""
     orders = df_orders.copy()
 
-    # Filter out cancelled orders if present
     if "is_cancelled" in orders.columns:
         orders = orders[~orders["is_cancelled"]].copy()
 
@@ -53,7 +22,6 @@ def compute_f11(
         if "is_cancelled" in items.columns:
             items = items[~items["is_cancelled"]].copy()
         
-        # Aggregate line items per order
         if "net_selling_price" in items.columns:
             items["_calc_net_price"] = items["net_selling_price"]
         elif "selling_price" in items.columns:
@@ -66,7 +34,6 @@ def compute_f11(
         else:
             items["_calc_cogs"] = 0.0
         
-        # Calculate historical/statistical expected refund cost if not already present
         if "expected_refund_cost" in items.columns:
             items["_calc_exp_refund"] = items["expected_refund_cost"].fillna(0.0)
         elif "is_returned" in items.columns and "refund_amount" in items.columns:
@@ -89,7 +56,6 @@ def compute_f11(
         orders["order_cogs"] = orders["order_cogs"].fillna(0.0)
         orders["order_expected_refund_cost"] = orders["order_expected_refund_cost"].fillna(0.0)
     else:
-        # Orders already contains aggregated fields
         if "order_net_merchandise_sales" not in orders.columns:
             if "net_sales" in orders.columns:
                 orders["order_net_merchandise_sales"] = orders["net_sales"]
@@ -111,26 +77,22 @@ def compute_f11(
             else:
                 orders["order_expected_refund_cost"] = 0.0
 
-    # Total collected revenue = Net Sales + Shipping Charged to customer
     if "shipping_charged_to_customer" in orders.columns:
         orders["shipping_charged_to_customer"] = orders["shipping_charged_to_customer"].fillna(0.0)
     else:
         orders["shipping_charged_to_customer"] = 0.0
     orders["total_money_collected"] = orders["order_net_merchandise_sales"] + orders["shipping_charged_to_customer"]
 
-    # Outbound courier shipping cost
     if "actual_shipping_cost" in orders.columns:
         orders["actual_shipping_cost"] = orders["actual_shipping_cost"].fillna(0.0)
     else:
         orders["actual_shipping_cost"] = 0.0
 
-    # Gateway fee
     if "gateway_fee" in orders.columns:
         orders["gateway_fee"] = orders["gateway_fee"].fillna(0.0)
     else:
         orders["gateway_fee"] = 0.0
 
-    # Expected refund cost override from order level if present
     if "expected_refund_cost" in orders.columns and "order_expected_refund_cost" in orders.columns:
         orders["order_expected_refund_cost"] = np.where(
             orders["expected_refund_cost"].notna(),
@@ -138,7 +100,6 @@ def compute_f11(
             orders["order_expected_refund_cost"],
         )
 
-    # Order Net Profit Calculation
     orders["order_net_profit"] = (
         orders["total_money_collected"]
         - orders["order_cogs"]

@@ -1,17 +1,4 @@
-"""src/scoring/f01_f03.py — F01 (Promotion Margin Leakage) & F03 (Margin Floor Breach).
-
-Business Definitions:
-    F03 (Margin Floor Breach):
-        Measures orders that become unprofitable (net contribution margin < 0)
-        after accounting for net selling price, COGS, shipping, and gateway fees.
-        Outputs: frequency of breaches (%) and loss severity ($).
-
-    F01 (Promotion Margin Leakage):
-        Measures the percentage of total orders where promotional discounts push
-        the sale below the required profit floor (target minimum profit).
-        Outputs: F01 score (% of total orders breached due to promo),
-        breach count, and total promotional margin leakage ($).
-"""
+"""F01 (Promotion Margin Leakage) & F03 (Margin Floor Breach) scoring."""
 
 from __future__ import annotations
 
@@ -20,43 +7,20 @@ import pandas as pd
 from src.config import TARGET_MARGINS, DEFAULT_TARGET_MARGIN
 
 
-# ---------------------------------------------------------------------------
-# Line-item level
-# ---------------------------------------------------------------------------
-
 def compute_line_item_margin(df: pd.DataFrame) -> pd.DataFrame:
-    """Add ``line_gross_profit = net_selling_price − cogs_total`` per row.
-
-    Rows with null COGS produce NaN margin — this is intentional;
-    the COGS-handling policy should be applied upstream (``data_clean.apply_cogs_policy``).
-    """
+    """Computes gross profit per line item."""
     df = df.copy()
     df["line_gross_profit"] = df["net_selling_price"] - df["cogs_total"]
     return df
 
 
-# ---------------------------------------------------------------------------
-# Order-level rollup
-# ---------------------------------------------------------------------------
-
 def compute_order_profit(df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate line-item margins and subtract order-level costs.
-
-    For each ``order_id``:
-        order_gross_profit = Σ(line_gross_profit)   — across all non-returned items
-        order_profit = order_gross_profit − actual_shipping_cost − gateway_fee
-
-    The result is merged back onto the original DataFrame as:
-        ``order_gross_profit``, ``order_shipping_cost``, ``order_gateway_fee``,
-        ``order_profit`` (= net contribution margin at order level).
-    """
+    """Aggregates line-item gross margins and subtracts order shipping and gateway fees."""
     df = df.copy()
 
-    # Compute line_gross_profit if not already present
     if "line_gross_profit" not in df.columns:
         df = compute_line_item_margin(df)
 
-    # For partial returns: only non-returned items contribute revenue/COGS
     if "is_returned" in df.columns:
         active_margin = df["line_gross_profit"].where(~df["is_returned"], 0.0)
     else:
@@ -64,8 +28,6 @@ def compute_order_profit(df: pd.DataFrame) -> pd.DataFrame:
 
     df["_active_line_gross_profit"] = active_margin
 
-    # Sum line-item margins per order
-    # If ANY line item in an order has NaN COGS, order gross profit must be NaN
     order_gross = (
         df.groupby("order_id")["_active_line_gross_profit"]
         .sum()
@@ -77,7 +39,6 @@ def compute_order_profit(df: pd.DataFrame) -> pd.DataFrame:
     )
     order_gross[has_nan] = np.nan
 
-    # Shipping and gateway fee: take first per order
     order_costs = (
         df.groupby("order_id")[["actual_shipping_cost", "gateway_fee"]]
         .first()
@@ -96,7 +57,6 @@ def compute_order_profit(df: pd.DataFrame) -> pd.DataFrame:
         - order_level["order_gateway_fee_filled"]
     )
 
-    # Aggregate discount status to order level if line-item level
     if "is_discounted" in df.columns:
         order_disc = df.groupby("order_id")["is_discounted"].any().rename("order_is_discounted")
         order_level = order_level.join(order_disc)
@@ -104,13 +64,11 @@ def compute_order_profit(df: pd.DataFrame) -> pd.DataFrame:
         order_disc = (df.groupby("order_id")["discount_given"].sum() > 0).rename("order_is_discounted")
         order_level = order_level.join(order_disc)
 
-    # Merge back
     merge_cols = ["order_gross_profit", "order_shipping_cost",
                   "order_gateway_fee", "order_profit"]
     if "order_is_discounted" in order_level.columns:
         merge_cols.append("order_is_discounted")
     
-    # Avoid duplicate column names if already present in df
     for col in merge_cols:
         if col in df.columns:
             df.drop(columns=[col], inplace=True)
@@ -121,25 +79,14 @@ def compute_order_profit(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ---------------------------------------------------------------------------
-# F03 — Margin Floor Breach
-# ---------------------------------------------------------------------------
-
 def compute_f03(df: pd.DataFrame) -> pd.DataFrame:
-    """Flag orders where order-level net profit is strictly negative (< 0).
-
-    Adds:
-        ``net_contribution_margin`` — alias for ``order_profit``
-        ``f03_breach`` — True where margin < 0 (False for >= 0 or NaN)
-        ``f03_loss``   — absolute value of negative margin (0.0 otherwise)
-    """
+    """Computes F03: flags unprofitable orders (profit < 0) and loss dollar severity."""
     df = df.copy()
 
     if "order_profit" not in df.columns:
         df = compute_order_profit(df)
 
     df["net_contribution_margin"] = df["order_profit"]
-    # NaN margin does not flag breach
     df["f03_breach"] = df["net_contribution_margin"] < 0.0
     df["f03_breach"] = df["f03_breach"].fillna(False)
     df["f03_loss"] = np.where(df["f03_breach"], -df["net_contribution_margin"], 0.0)
@@ -147,12 +94,8 @@ def compute_f03(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def aggregate_f03(df: pd.DataFrame) -> dict:
-    """Aggregate F03 Margin Floor Breach metrics.
-
-    Deduplicates on ``order_id`` to ensure order-level metric accuracy.
-    """
+    """Aggregates F03 margin floor breach frequency and loss totals."""
     deduped = df.drop_duplicates(subset="order_id")
-    # Only evaluate orders with valid (non-null) margin
     valid = deduped.dropna(subset=["net_contribution_margin"]) if "net_contribution_margin" in deduped.columns else deduped
     evaluated_count = len(valid)
     flagged = valid[valid["f03_breach"]]
@@ -170,31 +113,12 @@ def aggregate_f03(df: pd.DataFrame) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# F01 — Promotion Margin Leakage
-# ---------------------------------------------------------------------------
-
 def compute_f01(
     df: pd.DataFrame,
     target_margins: dict[str, float] | None = None,
     default_target_margin: float | None = None,
 ) -> pd.DataFrame:
-    """Flag orders where promotional discounts push profit below the required floor.
-
-    Business definition:
-        F01 measures the percentage of total orders where promotional discounts
-        push the sale below the required profit floor.
-
-    An order is flagged for F01 if and only if:
-        1. The order was discounted (``is_discounted == True`` or ``order_is_discounted == True``)
-        2. The order's net contribution margin is strictly below the required profit floor (``target_min_profit``)
-
-    Adds:
-        ``is_discounted`` (ensured)
-        ``target_min_profit`` (computed if missing)
-        ``f01_flagged`` — True where order is discounted and margin < target_min_profit
-        ``f01_loss``    — dollar gap (target_min_profit - margin) for flagged orders, 0 otherwise
-    """
+    """Computes F01: flags discounted orders where profit is below target profit floor."""
     df = df.copy()
     target_margins = target_margins or TARGET_MARGINS
     default_target = default_target_margin if default_target_margin is not None else DEFAULT_TARGET_MARGIN
@@ -202,7 +126,6 @@ def compute_f01(
     if "net_contribution_margin" not in df.columns:
         df = compute_f03(df)
 
-    # Determine discount status per row / order
     if "is_discounted" not in df.columns:
         if "order_is_discounted" in df.columns:
             df["is_discounted"] = df["order_is_discounted"]
@@ -211,7 +134,6 @@ def compute_f01(
         else:
             df["is_discounted"] = False
 
-    # Compute target_min_profit if not already present
     if "target_min_profit" not in df.columns:
         price_col = "selling_price" if "selling_price" in df.columns else "net_selling_price"
         if "category" in df.columns:
@@ -220,7 +142,6 @@ def compute_f01(
         else:
             df["target_min_profit"] = df[price_col] * default_target
 
-    # Aggregate target_min_profit to order level if line items exist
     if df["order_id"].duplicated().any():
         order_target = df.groupby("order_id")["target_min_profit"].sum().rename("_order_target_min_profit")
         df = df.merge(order_target, on="order_id", how="left")
@@ -228,21 +149,16 @@ def compute_f01(
     else:
         target_col = "target_min_profit"
 
-    # Discounted check: order must be discounted
     is_disc = df["is_discounted"]
     if "order_is_discounted" in df.columns:
         is_disc = is_disc | df["order_is_discounted"]
 
-    # Floor breach check: order profit < target_min_profit
     margin = df["net_contribution_margin"]
     target = df[target_col]
 
     is_below_floor = (margin < target) & margin.notna()
-
-    # F01 Flagged only when BOTH discounted and below floor
     df["f01_flagged"] = (is_disc & is_below_floor).fillna(False)
 
-    # F01 Dollar Loss Gap
     df["f01_loss"] = np.where(
         df["f01_flagged"],
         np.maximum(0.0, target - margin),
@@ -256,17 +172,7 @@ def compute_f01(
 
 
 def aggregate_f01(df: pd.DataFrame) -> dict:
-    """Aggregate F01 Promotion Margin Leakage metrics.
-
-    Business output:
-        - ``orders_evaluated``: Total evaluated orders
-        - ``discounted_orders``: Number of orders that received a promotional discount
-        - ``orders_flagged``: Number of discounted orders breaching the profit floor
-        - ``f01_score_pct``: % of total orders breaching profit floor due to promotions
-        - ``discounted_breach_rate_pct``: % of discounted orders breaching floor
-        - ``total_loss``: Total dollar leakage gap
-        - ``avg_loss_per_flagged_order``: Average loss on flagged orders
-    """
+    """Aggregates F01 promotion margin leakage score and total dollar loss."""
     deduped = df.drop_duplicates(subset="order_id")
     valid = deduped.dropna(subset=["net_contribution_margin"]) if "net_contribution_margin" in deduped.columns else deduped
     total_orders = len(valid)
@@ -296,7 +202,7 @@ def aggregate_f01(df: pd.DataFrame) -> dict:
 
 
 def aggregate_losses(df: pd.DataFrame, loss_col: str, flag_col: str) -> dict:
-    """Legacy helper for backward compatibility."""
+    """Helper for aggregating loss amounts."""
     deduped = df.drop_duplicates(subset="order_id")
     return {
         "orders_evaluated": len(deduped),
