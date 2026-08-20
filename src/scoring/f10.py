@@ -7,6 +7,17 @@ import pandas as pd
 from src.config import DEFAULT_RESTOCKING_RATE, DEFAULT_RETURN_SHIPPING_FLAT
 
 
+def compute_f10_normalized_score(net_product_profit: float, price_paid: float) -> float:
+    """Computes F10 Product Contribution Normalized Score (0–100 scale).
+    Formula: (Net Product Profit / Price Paid by Customer) * 100
+    Negative scores are explicitly capped at 0.
+    """
+    if price_paid > 0:
+        raw_score = (net_product_profit / price_paid) * 100.0
+        return max(0.0, raw_score)
+    return 0.0
+
+
 def compute_f10(
     df_orders: pd.DataFrame, 
     df_line_items: pd.DataFrame,
@@ -124,6 +135,12 @@ def compute_f10(
     sku_group["contribution_margin_pct"] = np.where(
         sku_group["net_merchandise_revenue"] > 0,
         (sku_group["product_contribution"] / sku_group["net_merchandise_revenue"]) * 100.0,
+        0.0,
+    )
+
+    sku_group["normalized_contribution_score"] = np.where(
+        sku_group["net_merchandise_revenue"] > 0,
+        np.maximum(0.0, (sku_group["product_contribution"] / sku_group["net_merchandise_revenue"]) * 100.0),
         0.0,
     )
 
