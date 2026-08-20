@@ -7,6 +7,20 @@ import pandas as pd
 from src.config import PRIMARY_CHANNEL
 
 
+def compute_f09_normalized_score(mkt_unit_profit: float, web_unit_profit: float) -> float:
+    """Computes F09 Channel Margin Normalization Score (0-100 scale).
+    Formula: (Marketplace Unit Profit / Website Unit Profit) * 100
+    """
+    if web_unit_profit != 0:
+        return (mkt_unit_profit / web_unit_profit) * 100.0
+    elif web_unit_profit == 0:
+        if mkt_unit_profit == 0:
+            return 100.0  # Equal margin parity at zero profit
+        else:
+            return 0.0   # Marketplace profit with 0 web profit - div-by-zero fallback
+    return 0.0
+
+
 def compute_f09(
     df_orders: pd.DataFrame, 
     df_line_items: pd.DataFrame, 
@@ -75,6 +89,7 @@ def compute_f09(
         
         unit_diff = max(0.0, primary_unit_profit - ch_unit_profit)
         ch_loss = unit_diff * ch_units
+        norm_score = compute_f09_normalized_score(ch_unit_profit, primary_unit_profit)
         
         total_loss += ch_loss
         divergence_losses[ch] = {
@@ -82,6 +97,7 @@ def compute_f09(
             "unit_profit": ch_unit_profit,
             "unit_profit_gap": unit_diff,
             "channel_divergence_loss": ch_loss,
+            "normalized_score": norm_score,
         }
 
     return {
