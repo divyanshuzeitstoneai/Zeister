@@ -6,14 +6,33 @@ import numpy as np
 import pandas as pd
 
 
+def compute_f05_normalized_score(charged: float, actual: float) -> float:
+    """Computes F05 Shipping Cost Recovery Score (0–100 scale).
+    Formula: (Shipping Fee Charged to Customer / Actual Courier Delivery Fee) * 100
+    """
+    if actual > 0:
+        return (charged / actual) * 100.0
+    elif actual == 0:
+        if charged == 0:
+            return 100.0  # 0 cost & 0 charged: full cost recovery (no deficit)
+        else:
+            return 100.0  # Charged customer with 0 courier cost: full recovery + surplus
+    return 0.0
+
+
 def compute_f05(df: pd.DataFrame) -> pd.DataFrame:
-    """Computes per-order shipping delta (charged - actual)."""
+    """Computes per-order shipping delta (charged - actual) and normalized recovery score."""
     df = df.copy()
     charged = df["shipping_charged_to_customer"].fillna(0.0)
     actual = df["actual_shipping_cost"].fillna(0.0)
     df["shipping_delta"] = charged - actual
     df["f05_surplus"] = df["shipping_delta"] > 0.0
     df["f05_deficit"] = df["shipping_delta"] < 0.0
+    df["shipping_recovery_score_pct"] = np.where(
+        actual > 0,
+        (charged / actual) * 100.0,
+        np.where(charged == 0, 100.0, 100.0),
+    )
     return df
 
 
