@@ -14,8 +14,6 @@
   - [F10 — Product Contribution](#f10--product-contribution)
   - [F11 — Order Profitability](#f11--order-profitability)
   - [F12 — Revenue Quality Score](#f12--revenue-quality-score)
-- [4. Master GraphQL Ingestion Query](#4-master-graphql-ingestion-query)
-- [5. Metafields & External Ingestion Stubs](#5-metafields--external-ingestion-stubs)
 
 ---
 
