@@ -7,6 +7,7 @@ from src.scoring.f01_f03 import compute_f03, aggregate_f03, compute_f01, aggrega
 from src.scoring.f02 import compute_f02
 from src.scoring.f04 import compute_f04, aggregate_f04
 from src.scoring.f05 import compute_f05, aggregate_f05
+from src.scoring.f06 import compute_f06, aggregate_f06
 from src.scoring.f09 import compute_f09
 from src.scoring.f10 import compute_f10, aggregate_f10
 from src.scoring.f11 import compute_f11, aggregate_f11
@@ -77,6 +78,18 @@ def run_all():
     print(f"  Total Surplus Collected: ${f05_res['total_surplus']:,.2f}")
     print(f"  Total Deficit Incurred:  ${f05_res['total_deficit']:,.2f}")
     print(f"  Net Shipping Position:   ${f05_res['net_shipping_position']:,.2f}")
+
+    f06_df = compute_f06(df_orders)
+    f06_res = aggregate_f06(f06_df)
+    print("\n--- F06: Payment Fee Leakage ---")
+    print(f"  Orders Evaluated: {f06_res['orders_evaluated']:,} | Unresolved: {f06_res['orders_unresolved']:,}")
+    print(f"  Orders Leaking:   {f06_res['orders_leaking']:,} ({f06_res['leakage_rate_pct']:.2f}%) | Efficient: {f06_res['orders_efficient']:,}")
+    print(f"  Total Fee Leakage: ${f06_res['total_leakage']:,.2f}")
+    print(f"  Average Fee Efficiency: {f06_res['avg_efficiency_pct']:.1f}%")
+    if f06_res["leakage_by_method"]:
+        print("  Breakdown by Payment Method:")
+        for m_name, m_data in f06_res["leakage_by_method"].items():
+            print(f"    - {m_name:15s}: {m_data['orders']:,} orders, leakage = ${m_data['total_leakage']:,.2f}, eff = {m_data['avg_efficiency_pct']:.1f}%")
 
     f09_res = compute_f09(df_orders, df_line_items)
     print("\n--- F09: Channel Margin Divergence ---")
