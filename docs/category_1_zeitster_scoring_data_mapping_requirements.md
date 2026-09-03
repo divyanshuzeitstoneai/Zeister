@@ -10,6 +10,7 @@
   - [F03 — Margin Floor Breach](#f03--margin-floor-breach)
   - [F04 — Free Shipping Leakage](#f04--free-shipping-leakage)
   - [F05 — Shipping Cost Recovery](#f05--shipping-cost-recovery)
+  - [F06 — Payment Fee Leakage Score](#f06--payment-fee-leakage-score)
   - [F09 — Channel Margin Divergence](#f09--channel-margin-divergence)
   - [F10 — Product Contribution](#f10--product-contribution)
   - [F11 — Order Profitability](#f11--order-profitability)
@@ -38,10 +39,12 @@
 | **F03** | Margin Floor Breach | $\text{Net Revenue} - \text{Active COGS} - \text{Shipping} - \text{Fees} < 0$ | `-$315.00` | `BREACH (True)` | 🔴 Critical Cash Loss |
 | **F04** | Free Shipping Leakage | $\max(0, \text{Uncovered Shipping} - \text{Product Profit})$ | `+$20.00` | `71.4% Coverage` | ⚠️ Uncovered Logistics |
 | **F05** | Shipping Recovery | $\left(\frac{\text{Shipping Charged}}{\text{Actual Courier Cost}}\right) \times 100$ | `-$5.00` | `50.0% Recovery` | ⚠️ 50% Self-Subsidized |
+| **F06** | Payment Fee Leakage | $\max(0, \text{Actual Gateway Fee} - \text{Benchmark Fee})$ | `+$1.55` | `53.0% Efficiency` | ⚠️ Gateway Fee Leakage |
 | **F09** | Channel Divergence | $\text{Web Unit Profit} - \text{Marketplace Unit Profit}$ | `+$37.50 / unit` | `62.5% Efficiency` | ℹ️ Marketplace Drag |
 | **F10** | Product Contribution | $\text{Net Revenue} - \text{Active COGS} - \text{Allocated Overhead}$ | `+$78.99` | `31.60% Contribution` | 🟢 Healthy Retained Unit |
 | **F11** | Order Profitability | $\text{Retained Cash} - \text{Active COGS} - \text{Costs} - 5\% \text{ Provision}$ | `+$90.40` | `24.43% Margin` | 🟢 Net Cash Positive |
 | **F12** | Revenue Quality | $\left(\frac{\text{Net Retained Revenue}}{\text{Gross Revenue}}\right) \times 100$ | `+$325.00` | `37.36% Retained` | 🔴 High Return Attrition |
+
 
 ---
 
@@ -183,7 +186,44 @@ $$\text{Shipping Recovery (Normalized 0–100)} = \left(\frac{\text{shipping\_ch
 
 ---
 
+### F06 — Payment Fee Leakage Score
+
+#### Core Mathematical Formula:
+$$\text{Standard Benchmark Fee} = (\text{Order Amount} \times \text{standard\_fee\_pct}) + \text{standard\_fixed\_fee}$$
+$$\text{Fee Variance (Loss per Order)} = \text{Actual Gateway Fee Paid} - \text{Standard Benchmark Fee}$$
+$$\text{Leakage (Raw)} = \max(0, \text{Fee Variance})$$
+$$\text{Normalized Fee Efficiency Score (0–100)} = \left(\frac{\text{Standard Benchmark Fee}}{\text{Actual Gateway Fee Paid}}\right) \times 100$$
+
+#### Data Mapping:
+| Variable Name | Status | Exact Source Path | Test Value / Schema Type |
+|---|---|---|---|
+| `order_amount` | ✅ VERIFIED | `Order.totalPriceSet.shopMoney.amount` | `"50.0"`, `"100.0"` |
+| `actual_gateway_fee` | ⚠️ PARTIAL | `Order.transactions.fees.amount.amount` | `"1.75"` (Card), `"3.30"` (BNPL); null on manual orders |
+| `payment_method_name` | ⚠️ PARTIAL | `Order.transactions.paymentDetails.paymentMethodName` | `"Visa"`, `"Shop Pay Installments"`, `"Klarna"` |
+| `gateway_name` | ⚠️ PARTIAL | `Order.transactions.gateway` | `"shopify_payments"`, `"shop_pay_installments"` |
+| `is_international_card`| ❌ EXTERNAL | External processor payload / BIN lookup | `true` / `false` |
+| `standard_fee_pct` | ⚙️ METAFIELD | `Shop.metafield(namespace: "zeitster", key: "gateway_fee_benchmark").pct` | Default: `0.029` (2.9%) |
+| `standard_fixed_fee` | ⚙️ METAFIELD | `Shop.metafield(namespace: "zeitster", key: "gateway_fee_benchmark").fixed` | Default: `0.30` ($0.30) |
+| `high_cost_rates` | ⚙️ METAFIELD | `Shop.metafield(namespace: "zeitster", key: "high_cost_payment_rates")` | JSON: `{"bnpl": {"pct": 0.06, "fixed": 0.30}, "intl_card": {"pct": 0.045, "fixed": 0.30}}` |
+| `is_benchmark_estimated`| 🧮 PIPELINE | Flag set to `true` when default 2.9% + $0.30 fallback is used | `true` / `false` |
+
+#### Developer Fallback & Transformation Rules:
+- **Strict Non-Silent Zero Rule on Gateway Fees:** If `actual_gateway_fee` is null (offline, COD, manual, or uncaptured orders), the score **must resolve to `Unresolved`**. NEVER default missing gateway fee to $0.00.
+- **Missing Benchmark Metafield:** If merchant has no custom benchmark metafield, fall back to industry default `2.9% + $0.30` and set `is_benchmark_estimated = true`.
+- **Payment Method Classification Ladder:** `paymentDetails.paymentMethodName` ⟶ infer from `gateway` (e.g. `shop_pay_installments` ⟶ `BNPL`) ⟶ `Unknown`. Longest patterns matched first to prevent substring collisions (e.g. "Shop Pay Installments" before "Shop Pay"). If unclassifiable, compute baseline leakage and flag `is_method_known = false`.
+- **Asymmetric Reporting:** Order-level leakage is strictly $\max(0, \text{variance})$. Negative variance (savings on low-cost debit rails) is tracked separately in storewide rollups (`total_savings`, `net_fee_position`).
+
+#### Calculation Trace (BNPL Worked Example):
+- Order Amount = $\$50.00$, Payment Method = Shop Pay Installments (BNPL)
+- Actual Gateway Fee Paid = $\$3.30$
+- Standard Benchmark Fee = $(\$50.00 \times 0.029) + \$0.30 = \$1.75$
+- $\text{Fee Variance} = \$3.30 - \$1.75 = +\$1.55 \text{ (Leakage)}$
+- $\text{Normalized Fee Efficiency Score} = \left(\frac{\$1.75}{\$3.30}\right) \times 100 = 53.03\% \approx 53.0\% \quad (\text{Overpaying } \sim 47\% \text{ vs. Baseline})$
+
+---
+
 ### F09 — Channel Margin Divergence
+
 
 #### Core Mathematical Formula:
 $$\text{Web Unit Profit} = \text{Selling Price} - \text{COGS}$$

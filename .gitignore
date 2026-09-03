@@ -1,6 +1,7 @@
-# Data, docs, notebooks
+# Data, docs, notebooks, prompts
 data/
 docs/
+prompt/
 Notebook/
 notebook/
 notebooks/
